@@ -1,0 +1,9 @@
+{
+    "id":"generic-plugin",
+    "name": "Generic Plugin",
+    "description": "this is a generic plugin to be used within MES-CoBraD edge module",
+    "type": "utils",
+    "version": "v0.0.1",
+    "url": "https://github.com/trowdan/generic-plugin",
+    "entry-point": "entrypoint.py"
+}
