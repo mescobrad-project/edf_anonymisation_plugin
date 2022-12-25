@@ -1,9 +1,9 @@
 {
-    "id":"generic-plugin",
-    "name": "Generic Plugin",
-    "description": "this is a generic plugin to be used within MES-CoBraD edge module",
+    "id":"edf_anonymisation_plugin",
+    "name": "edf_anonymisation_plugin",
+    "description": "Plugin used for anonymizing EDF files.",
     "type": "utils",
     "version": "v0.0.1",
-    "url": "https://github.com/trowdan/generic-plugin",
+    "url": "https://github.com/mescobrad-project/edf_anonymisation_plugin.git",
     "entry-point": "entrypoint.py"
 }
