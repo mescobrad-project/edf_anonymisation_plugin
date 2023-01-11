@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from fileinput import filename
-from typing import Any
+from typing import Any, List
 
 
 import os
@@ -12,18 +12,19 @@ import configparser
 import datetime
 
 
-PLUGIN_CONF_FILE_NAME = 'plugin.config'
+PLUGIN_CONF_FILE_NAME = 'mescobrad_edge/plugins/edf_anonymisation_plugin/plugin.config'
 PLUGIN_CONF_MAIN_SECTION = 'plugin-configuration'
-PLUGIN_OUTPUT_FILE_DEST = './'
+PLUGIN_OUTPUT_FILE_DEST = '.'
 PLUGIN_OUTPUT_FILE_NAME_FORMAT = '{plugin_name}-{timestamp}'
 
 @dataclass
-class PluginActionResponse(): 
+class PluginActionResponse():
     file_content_type: str = None
-    file_content: Any = None
+    file_content: List[Any] = None
+    file_name: List[str] = None
 
 @dataclass
-class PluginExchangeMetadata(): 
+class PluginExchangeMetadata():
     file_name: str = None
     file_content_type: str = None
     file_size: int = None
@@ -31,7 +32,7 @@ class PluginExchangeMetadata():
 
 
 class EmptyPlugin():
-    
+
     def __init__(self):
         # Dynamically set plugin configuration
         config = configparser.ConfigParser()
@@ -81,14 +82,14 @@ class EmptyPlugin():
         # Create output file
         with open(f"{PLUGIN_OUTPUT_FILE_DEST}/{file_name}", 'wb') as dest_file:
             dest_file.write(output_file.file_content.encode() if type(output_file.file_content)==str else output_file.file_content)
-        
+
         # Get its size
         file_size = os.path.getsize(f"{PLUGIN_OUTPUT_FILE_DEST}/{file_name}")
 
         # Build Metadata
-        out_meta = PluginExchangeMetadata(file_name=file_name, 
-                                        file_content_type=output_file.file_content_type, 
-                                        file_size=file_size, 
+        out_meta = PluginExchangeMetadata(file_name=file_name,
+                                        file_content_type=output_file.file_content_type,
+                                        file_size=file_size,
                                         created_on=created_on)
 
         return out_meta
@@ -100,12 +101,11 @@ class EmptyPlugin():
         self.__activate_venv__()
         # Execute plugin-specific action
         output = self.action(inputFileMetadata)
-        
-        if output is not None:
+        if output.file_content_type is not None and output.file_content is not None and output.file_name is not None:
             # Store the action output
             outputFileMetadata = self.__store__(output)
         else:
             # Create an empty exchange metadata
             outputFileMetadata = PluginExchangeMetadata()
-        
+
         return outputFileMetadata
