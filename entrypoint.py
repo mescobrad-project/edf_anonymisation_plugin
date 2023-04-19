@@ -5,6 +5,7 @@ class GenericPlugin(EmptyPlugin):
         import boto3
         from botocore.client import Config
         import os
+        import time
 
         s3_local = boto3.resource('s3',
                                   endpoint_url=self.__OBJ_STORAGE_URL_LOCAL__,
@@ -13,28 +14,26 @@ class GenericPlugin(EmptyPlugin):
                                   config=Config(signature_version='s3v4'),
                                   region_name=self.__OBJ_STORAGE_REGION__)
 
-        s3 = boto3.resource("s3",
-                            endpoint_url=self.__OBJ_STORAGE_URL__,
-                            aws_access_key_id=self.__OBJ_STORAGE_ACCESS_ID__,
-                            aws_secret_access_key=self.__OBJ_STORAGE_ACCESS_SECRET__,
-                            config=Config(signature_version='s3v4'),
-                            region_name=self.__OBJ_STORAGE_REGION__)
-
         bucket_local = s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__)
-        bucket = s3.Bucket(self.__OBJ_STORAGE_BUCKET__)
-        # Existing non annonymized data in local MinIO bucket
-        obj_personal_data = bucket_local.objects.filter(Prefix="edf_data/", Delimiter="/")
-        # Anonymized data in remote MinIO bucket
-        obj_anonymous_data = bucket.objects.filter(Prefix="edf_anonymized_data/", Delimiter="/")
 
-        keys_anonymous_data = [os.path.basename(obj.key) for obj in obj_anonymous_data]
+        # Existing non annonymized data in local MinIO bucket
+        obj_personal_data = bucket_local.objects.filter(Prefix="edf_data_tmp/", Delimiter="/")
+
         # Files for anonymization
-        files_to_anonymize = [obj.key for obj in obj_personal_data if os.path.basename(obj.key) not in keys_anonymous_data]
+        files_to_anonymize = [obj.key for obj in obj_personal_data]
 
         # Download data which need to be anonymized
         for file_name in files_to_anonymize:
-            path_download_file = file_path+os.path.basename(file_name)
+            ts = round(time.time()*1000)
+            basename, extension = os.path.splitext(os.path.basename(file_name))
+            path_download_file = f"{file_path}{basename}_{ts}.{extension}"
+
             s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).download_file(file_name, path_download_file)
+
+            # In order to rename the original file in bucket we need to delete it and upload it again
+            s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__, "edf_data_tmp/"+os.path.basename(file_name)).delete()
+            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_file(path_download_file,
+                                                                           "EEGs/edf/" + os.path.basename(path_download_file))
 
     def anonymize_edf_file(self, edf_file, new_file_path, to_remove, new_values):
         """Anonymize edf file by removing values of personal data in header fields."""
@@ -71,7 +70,7 @@ class GenericPlugin(EmptyPlugin):
         for file in os.listdir(path_to_anonymized_files):
             file_to_upload = os.path.join(path_to_anonymized_files, file)
             if os.path.isfile(file_to_upload):
-                s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_file(file_to_upload, "edf_anonymized_data/" + file)
+                s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_file(file_to_upload, "EEGs/edf/" + file)
 
     def action(self, input_meta: PluginExchangeMetadata = None) -> PluginActionResponse:
         """
@@ -88,7 +87,7 @@ class GenericPlugin(EmptyPlugin):
         # Download data to process
         self.download_file(path_to_data)
 
-        # Anonymize and upload anonymized files
+        # Anonymize files
         path_to_anonymized_file = path_to_data + "anonymized"
         os.makedirs(path_to_anonymized_file, exist_ok=True)
 
