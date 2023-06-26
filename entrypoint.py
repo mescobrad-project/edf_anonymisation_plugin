@@ -26,7 +26,7 @@ class GenericPlugin(EmptyPlugin):
         for file_name in files_to_anonymize:
             ts = round(time.time()*1000)
             basename, extension = os.path.splitext(os.path.basename(file_name))
-            path_download_file = f"{file_path}{basename}_{ts}.{extension}"
+            path_download_file = f"{file_path}{basename}_{ts}{extension}"
 
             s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).download_file(file_name, path_download_file)
 
