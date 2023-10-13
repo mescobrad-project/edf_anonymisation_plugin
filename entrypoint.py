@@ -96,8 +96,8 @@ class GenericPlugin(EmptyPlugin):
             if os.path.isfile(path_to_file):
                 # Remove personal information from headers
                 remove_values = ["patientname", "birthdate", "patient_additional", \
-                                 "patientcode", "admincode", "gender", "technician"]
-                new_values = ["", "", "", "", "", "", ""]
+                                 "patientcode", "admincode", "gender", "sex", "technician"]
+                new_values = ["", "", "", "", "", "", "", ""]
                 self.anonymize_edf_file(path_to_file, path_to_anonymized_file, remove_values, new_values)
 
         # Upload processed data
