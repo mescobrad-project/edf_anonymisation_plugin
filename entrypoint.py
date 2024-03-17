@@ -168,6 +168,44 @@ class GenericPlugin(EmptyPlugin):
                 s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_file(file_to_upload,
                                                                    "EEGs/edf/" + file)
 
+    def update_filename_pid_mapping(self, obj_name, personal_id):
+        import boto3
+        from botocore.client import Config
+        import csv
+        import io
+
+        s3_local = boto3.resource('s3',
+                                  endpoint_url=self.__OBJ_STORAGE_URL_LOCAL__,
+                                  aws_access_key_id=self.__OBJ_STORAGE_ACCESS_ID_LOCAL__,
+                                  aws_secret_access_key=self.__OBJ_STORAGE_ACCESS_SECRET_LOCAL__,
+                                  config=Config(signature_version='s3v4'),
+                                  region_name=self.__OBJ_STORAGE_REGION__)
+        folder = "file_pid/"
+        filename = "filename_pid.csv"
+        file_path = f"{folder}{filename}"
+
+        bucket_local = s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__)
+        obj_files = bucket_local.objects.filter(Prefix=folder, Delimiter="/")
+
+        if (len(list(obj_files))) > 0:
+            existing_object = s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__, file_path)
+            existing_data = existing_object.get()["Body"].read().decode('utf-8')
+            data_to_append = [obj_name, personal_id]
+            existing_rows = list(csv.reader(io.StringIO(existing_data)))
+            existing_rows.append(data_to_append)
+
+            updated_data = io.StringIO()
+            csv.writer(updated_data).writerows(existing_rows)
+            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_fileobj(
+                io.BytesIO(updated_data.getvalue().encode('utf-8')), file_path)
+        else:
+            key_values = ['filename', 'personal_id']
+            file_data = [key_values, [obj_name, personal_id]]
+            updated_data = io.StringIO()
+            csv.writer(updated_data).writerows(file_data)
+            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_fileobj(
+                io.BytesIO(updated_data.getvalue().encode('utf-8')), file_path)
+
     def action(self, input_meta: PluginExchangeMetadata = None) -> PluginActionResponse:
         """
         Run the anonymisation process of the edf files.
@@ -274,6 +312,10 @@ class GenericPlugin(EmptyPlugin):
                         data, source_name, input_meta.data_info["workspace_id"])
                     self.upload_data_on_trino(schema_name, table_name, data_transformed,
                                               conn)
+
+                    # Update key value file with mapping between filename nad patient id,
+                    # this file is stored in the local MinIO instance
+                    self.update_filename_pid_mapping(file, personal_id)
 
             # Upload processed data
             print("Uploading file ...")
