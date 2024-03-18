@@ -22,7 +22,7 @@ class PluginActionResponse():
     file_content_type: str = None
     file_content: List[Any] = None
     file_name: List[str] = None
-    workspace_id: str = None
+    data_info: dict = None
 
 
 @dataclass
@@ -31,7 +31,7 @@ class PluginExchangeMetadata():
     file_content_type: str = None
     file_size: int = None
     created_on: str = None
-    workspace_id: str = None
+    data_info: dict = None
 
 
 class EmptyPlugin():
@@ -94,7 +94,7 @@ class EmptyPlugin():
                                           file_content_type=output_file.file_content_type,
                                           file_size=file_size,
                                           created_on=created_on,
-                                          workspace_id=output_file.workspace_id)
+                                          data_info=output_file.data_info)
 
         return out_meta
 

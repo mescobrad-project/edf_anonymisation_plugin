@@ -72,7 +72,8 @@ class GenericPlugin(EmptyPlugin):
         bucket_local = s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__)
 
         # Existing non annonymized data in local MinIO bucket
-        obj_personal_data = bucket_local.objects.filter(Prefix="edf_data_tmp/", Delimiter="/")
+        obj_personal_data = bucket_local.objects.filter(Prefix="edf_data_tmp/",
+                                                        Delimiter="/")
 
         # Files for anonymization
         files_to_anonymize = [obj.key for obj in obj_personal_data]
@@ -83,12 +84,15 @@ class GenericPlugin(EmptyPlugin):
             basename, extension = os.path.splitext(os.path.basename(file_name))
             path_download_file = f"{file_path}{basename}_{ts}{extension}"
 
-            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).download_file(file_name, path_download_file)
+            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).download_file(
+                file_name, path_download_file)
 
-            # In order to rename the original file in bucket we need to delete it and upload it again
-            s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__, "edf_data_tmp/"+os.path.basename(file_name)).delete()
-            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_file(path_download_file,
-                                                                           "EEGs/edf/" + os.path.basename(path_download_file))
+            # In order to rename the original file in bucket we need to delete it and
+            # upload it again
+            s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__,
+                            "edf_data_tmp/"+os.path.basename(file_name)).delete()
+            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_file(
+                path_download_file, "EEGs/edf/" + os.path.basename(path_download_file))
 
     def anonymize_edf_file(self, signals, signal_headers, header, edf_file, new_file_path,
                            to_remove, new_values):
@@ -132,6 +136,20 @@ class GenericPlugin(EmptyPlugin):
 
         return signals_metadata
 
+    def generate_personal_id(self, personal_data):
+        """Based on the identity, full_name and date of birth."""
+
+        import hashlib
+
+        personal_id = "".join(str(data) for data in personal_data)
+
+        # Remove all whitespaces characters
+        personal_id = "".join(personal_id.split())
+
+        # Generate ID
+        id = hashlib.sha256(bytes(personal_id, "utf-8")).hexdigest()
+        return id
+
     def upload_file(self, path_to_anonymized_files: str) -> None:
         import boto3
         from botocore.client import Config
@@ -147,7 +165,46 @@ class GenericPlugin(EmptyPlugin):
         for file in os.listdir(path_to_anonymized_files):
             file_to_upload = os.path.join(path_to_anonymized_files, file)
             if os.path.isfile(file_to_upload):
-                s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_file(file_to_upload, "EEGs/edf/" + file)
+                s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_file(file_to_upload,
+                                                                   "EEGs/edf/" + file)
+
+    def update_filename_pid_mapping(self, obj_name, personal_id):
+        import boto3
+        from botocore.client import Config
+        import csv
+        import io
+
+        s3_local = boto3.resource('s3',
+                                  endpoint_url=self.__OBJ_STORAGE_URL_LOCAL__,
+                                  aws_access_key_id=self.__OBJ_STORAGE_ACCESS_ID_LOCAL__,
+                                  aws_secret_access_key=self.__OBJ_STORAGE_ACCESS_SECRET_LOCAL__,
+                                  config=Config(signature_version='s3v4'),
+                                  region_name=self.__OBJ_STORAGE_REGION__)
+        folder = "file_pid/"
+        filename = "filename_pid.csv"
+        file_path = f"{folder}{filename}"
+
+        bucket_local = s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__)
+        obj_files = bucket_local.objects.filter(Prefix=folder, Delimiter="/")
+
+        if (len(list(obj_files))) > 0:
+            existing_object = s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__, file_path)
+            existing_data = existing_object.get()["Body"].read().decode('utf-8')
+            data_to_append = [obj_name, personal_id]
+            existing_rows = list(csv.reader(io.StringIO(existing_data)))
+            existing_rows.append(data_to_append)
+
+            updated_data = io.StringIO()
+            csv.writer(updated_data).writerows(existing_rows)
+            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_fileobj(
+                io.BytesIO(updated_data.getvalue().encode('utf-8')), file_path)
+        else:
+            key_values = ['filename', 'personal_id']
+            file_data = [key_values, [obj_name, personal_id]]
+            updated_data = io.StringIO()
+            csv.writer(updated_data).writerows(file_data)
+            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_fileobj(
+                io.BytesIO(updated_data.getvalue().encode('utf-8')), file_path)
 
     def action(self, input_meta: PluginExchangeMetadata = None) -> PluginActionResponse:
         """
@@ -157,6 +214,7 @@ class GenericPlugin(EmptyPlugin):
         """
         import os
         import shutil
+        import pandas as pd
 
         from trino.dbapi import connect
         from trino.auth import BasicAuthentication
@@ -219,13 +277,48 @@ class GenericPlugin(EmptyPlugin):
                     # Source name of the original edf file
                     source_name = os.path.basename(path_to_file)
 
+                    # Generate personal id
+                    data_info = input_meta.data_info
+                    if all(param is not None for param in [data_info['name'],
+                                                           data_info['surname'],
+                                                           data_info['date_of_birth'],
+                                                           data_info['unique_id']]):
+
+                        # Make unified dates, so that different formats of date doesn't
+                        # change the final id
+                        data_info["date_of_birth"] = pd.to_datetime(
+                             data_info["date_of_birth"], dayfirst=True)
+
+                        data_info["date_of_birth"] = data_info["date_of_birth"].strftime(
+                            "%d-%m-%Y")
+
+                        # ID is generated base on name, surname, date of birth, national
+                        # unique ID
+                        personal_data = [data_info['name'], data_info['surname'],
+                                         data_info['date_of_birth'],
+                                         data_info['unique_id']]
+                        personal_id = self.generate_personal_id(personal_data)
+                    else:
+                        # TO DO - what is the flow if the data is not provided
+                        personal_data = []
+                        personal_id = self.generate_personal_id(personal_data)
+
+
+                    # Insert personal id in the extracted data
+                    data.insert(0, "PID", personal_id)
+
                     # Transform data in suitable form for updating trino table
-                    data_transformed = self.transform_input_data(data, source_name,
-                                                                 input_meta.workspace_id)
+                    data_transformed = self.transform_input_data(
+                        data, source_name, input_meta.data_info["workspace_id"])
                     self.upload_data_on_trino(schema_name, table_name, data_transformed,
                                               conn)
 
+                    # Update key value file with mapping between filename nad patient id,
+                    # this file is stored in the local MinIO instance
+                    self.update_filename_pid_mapping(file, personal_id)
+
             # Upload processed data
+            print("Uploading file ...")
             self.upload_file(path_to_anonymized_file)
             print("Processing of the edf file is finished.")
 
