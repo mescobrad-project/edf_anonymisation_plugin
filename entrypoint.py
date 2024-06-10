@@ -17,10 +17,15 @@ class GenericPlugin(EmptyPlugin):
         # Return the results
         return rows
 
-    def transform_input_data(self, data, source_name, workspace_id):
+    def transform_input_data(self, data, source_name, workspace_id, MRN,
+                             metadata_file_name):
         """Transform input data into table suitable for creating query"""
 
         data = data.reset_index(drop=True)
+        if MRN is not None:
+            data["MRN"] = MRN
+        if metadata_file_name is not None:
+            data['metadata_file_name'] = metadata_file_name
 
         # Add rowid column representing id of the row in the file
         data["rowid"] = data.index + 1
@@ -150,10 +155,12 @@ class GenericPlugin(EmptyPlugin):
         id = hashlib.sha256(bytes(personal_id, "utf-8")).hexdigest()
         return id
 
-    def upload_file(self, path_to_anonymized_files: str) -> None:
+    def upload_file(self, path_to_anonymized_files: str,
+                     metadata_file_name, metadata_content) -> None:
         import boto3
         from botocore.client import Config
         import os
+        from io import BytesIO
 
         s3 = boto3.resource('s3',
                             endpoint_url=self.__OBJ_STORAGE_URL__,
@@ -167,6 +174,11 @@ class GenericPlugin(EmptyPlugin):
             if os.path.isfile(file_to_upload):
                 s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_file(file_to_upload,
                                                                    "EEGs/edf/" + file)
+                if metadata_file_name is not None:
+                    obj_name = f"metadata_files/{metadata_file_name}"
+                    s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_fileobj(
+                        BytesIO(metadata_content), obj_name,
+                        ExtraArgs={'ContentType': "text/json"})
 
     def update_filename_pid_mapping(self, obj_name, personal_id):
         import boto3
@@ -277,6 +289,14 @@ class GenericPlugin(EmptyPlugin):
                     # Source name of the original edf file
                     source_name = os.path.basename(path_to_file)
 
+                    # Metadata file name
+                    metadata_file_template = "{name}.json"
+                    if input_meta.data_info["metadata_json_file"] is not None:
+                        metadata_file_name = metadata_file_template.format(
+                            name=os.path.splitext(source_name)[0])
+                    else:
+                        metadata_file_name = None
+
                     # Generate personal id
                     data_info = input_meta.data_info
                     if all(param is not None for param in [data_info['name'],
@@ -309,7 +329,9 @@ class GenericPlugin(EmptyPlugin):
 
                     # Transform data in suitable form for updating trino table
                     data_transformed = self.transform_input_data(
-                        data, source_name, input_meta.data_info["workspace_id"])
+                        data, source_name, input_meta.data_info["workspace_id"],
+                        input_meta.data_info["MRN"], metadata_file_name)
+
                     self.upload_data_on_trino(schema_name, table_name, data_transformed,
                                               conn)
 
@@ -319,7 +341,8 @@ class GenericPlugin(EmptyPlugin):
 
             # Upload processed data
             print("Uploading file ...")
-            self.upload_file(path_to_anonymized_file)
+            self.upload_file(path_to_anonymized_file, metadata_file_name,
+                             input_meta.data_info["metadata_json_file"])
             print("Processing of the edf file is finished.")
 
         except Exception as e:
