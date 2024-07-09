@@ -265,6 +265,7 @@ class GenericPlugin(EmptyPlugin):
                 if os.path.isfile(path_to_file):
 
                     # Read the file and get all the data from the original file
+                    print("Processing started ...")
                     signals, signal_headers, header = pyedflib.highlevel.read_edf(path_to_file)
 
                     # Remove personal information from headers
@@ -280,11 +281,24 @@ class GenericPlugin(EmptyPlugin):
                                             path_to_anonymized_file, remove_values,
                                             new_values)
 
-                    # Extract metadata information from the edf file
+                    # Extract metadata information from the edf file, from
+                    # signal header
                     list_of_fields_to_extract = ['label','sample_rate','sample_frequency',\
                                                  'prefilter', 'dimension']
                     print("Extracting metadata information ... ")
                     data = self.extract_metadata(signal_headers, list_of_fields_to_extract)
+
+                    # Extract additional information from header (startdate/time
+                    # and duration of the signal)
+                    f = pyedflib.EdfReader(path_to_file)
+                    file_duration = f.getFileDuration()
+                    startdate_time = f.getStartdatetime()
+                    del f
+
+                    # Insert additional data in extracted metadata from signal
+                    # headers
+                    data.insert(0, 'file_duration', file_duration)
+                    data.insert(0, 'startdate_time', startdate_time)
 
                     # Source name of the original edf file
                     source_name = os.path.basename(path_to_file)
