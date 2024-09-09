@@ -18,13 +18,14 @@ class GenericPlugin(EmptyPlugin):
         # Return the results
         return rows
 
-    def transform_input_data(self, data, source_name, workspace_id, MRN,
+    def transform_input_data(self, data, source_name, workspace_id, pseudoMRN,
                              metadata_file_name):
         """Transform input data into table suitable for creating query"""
 
         data = data.reset_index(drop=True)
-        if MRN is not None:
-            data["MRN"] = MRN
+
+        data["pseudoMRN"] = pseudoMRN
+
         if metadata_file_name is not None:
             data['metadata_file_name'] = metadata_file_name
 
@@ -192,7 +193,7 @@ class GenericPlugin(EmptyPlugin):
                         BytesIO(metadata_content), obj_name,
                         ExtraArgs={'ContentType': "text/json"})
 
-    def update_filename_pid_mapping(self, obj_name, personal_id):
+    def update_filename_pid_mapping(self, obj_name, personal_id, pseudoMRN, mrn):
         import boto3
         from botocore.client import Config
         import csv
@@ -209,6 +210,7 @@ class GenericPlugin(EmptyPlugin):
         folder = "file_pid/"
         filename = "filename_pid.csv"
         file_path = f"{folder}{filename}"
+        obj_name_path = f"EEGs/edf/{obj_name}"
 
         bucket_local = s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__)
         obj_files = bucket_local.objects.filter(Prefix=folder, Delimiter="/")
@@ -217,21 +219,41 @@ class GenericPlugin(EmptyPlugin):
             existing_object = s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__,
                                               file_path)
             existing_data = existing_object.get()["Body"].read().decode('utf-8')
-            data_to_append = [obj_name, personal_id]
+            data_to_append = [obj_name_path, personal_id, pseudoMRN, mrn]
             existing_rows = list(csv.reader(io.StringIO(existing_data)))
             existing_rows.append(data_to_append)
+
+            # Update column names
+            column_names = ['filename', 'personal_id', 'pseudoMRN', 'MRN']
+            if any(col_name not in existing_rows[0] for col_name in column_names):
+                existing_rows[0] = column_names
 
             updated_data = io.StringIO()
             csv.writer(updated_data).writerows(existing_rows)
             s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_fileobj(
                 io.BytesIO(updated_data.getvalue().encode('utf-8')), file_path)
         else:
-            key_values = ['filename', 'personal_id']
-            file_data = [key_values, [obj_name, personal_id]]
+            key_values = ['filename', 'personal_id', 'pseudoMRN', 'MRN']
+            file_data = [key_values, [obj_name_path, personal_id, pseudoMRN, mrn]]
             updated_data = io.StringIO()
             csv.writer(updated_data).writerows(file_data)
             s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_fileobj(
                 io.BytesIO(updated_data.getvalue().encode('utf-8')), file_path)
+
+    def calculate_pseudoMRN(self, mrn, workspace_id):
+        import hashlib
+
+        if mrn is None:
+            pseudoMRN = None
+        else:
+            personalMRN = [mrn, workspace_id]
+            personal_mrn = "".join(str(data) for data in personalMRN)
+
+            # Generate ID
+            pseudoMRN = hashlib.sha256(bytes(personal_mrn, "utf-8")).hexdigest()
+
+        return pseudoMRN
+
 
     def action(self, input_meta: PluginExchangeMetadata = None) -> \
           PluginActionResponse:
@@ -365,10 +387,15 @@ class GenericPlugin(EmptyPlugin):
                     # Insert personal id in the extracted data
                     data.insert(0, "PID", personal_id)
 
+                    # Generate pseudoMRN
+                    pseudoMRN = self.calculate_pseudoMRN(
+                        input_meta.data_info['MRN'],
+                        input_meta.data_info['workspace_id'])
+
                     # Transform data in suitable form for updating trino table
                     data_transformed = self.transform_input_data(
                         data, source_name, input_meta.data_info["workspace_id"],
-                        input_meta.data_info["MRN"], metadata_file_name)
+                        pseudoMRN, metadata_file_name)
 
                     self.upload_data_on_trino(schema_name, table_name,
                                               data_transformed, conn)
@@ -376,7 +403,9 @@ class GenericPlugin(EmptyPlugin):
                     # Update key value file with mapping between filename and
                     # patient id, this file is stored in the local MinIO
                     # instance
-                    self.update_filename_pid_mapping(file, personal_id)
+                    self.update_filename_pid_mapping(file, personal_id,
+                                                     pseudoMRN,
+                                                     input_meta.data_info['MRN'])
 
             # Upload processed data
             print("Uploading file ...")
