@@ -379,10 +379,7 @@ class GenericPlugin(EmptyPlugin):
                                          data_info['unique_id']]
                         personal_id = self.generate_personal_id(personal_data)
                     else:
-                        # TO DO - what is the flow if the data is not provided
-                        personal_data = []
-                        personal_id = self.generate_personal_id(personal_data)
-
+                        personal_id = None
 
                     # Insert personal id in the extracted data
                     data.insert(0, "PID", personal_id)
