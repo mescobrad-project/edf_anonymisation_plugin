@@ -65,11 +65,10 @@ class GenericPlugin(EmptyPlugin):
                              data=data_to_insert)
         self.execute_sql_on_trino(sql=sql_statement, conn=conn)
 
-    def download_file(self, file_path: str) -> None:
+    def download_file(self, path_download_file:str, file_name:str) -> None:
         import boto3
         from botocore.client import Config
         import os
-        import time
 
         s3_local = boto3.resource('s3',
                                   endpoint_url=self.__OBJ_STORAGE_URL_LOCAL__,
@@ -80,35 +79,20 @@ class GenericPlugin(EmptyPlugin):
                                   config=Config(signature_version='s3v4'),
                                   region_name=self.__OBJ_STORAGE_REGION__)
 
-        bucket_local = s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__)
-
-        # Existing non annonymized data in local MinIO bucket
-        obj_personal_data = bucket_local.objects.filter(Prefix="edf_data_tmp/",
-                                                        Delimiter="/")
-
-        # Files for anonymization
-        files_to_anonymize = [obj.key for obj in obj_personal_data]
-
         # Download data which need to be anonymized
-        for file_name in files_to_anonymize:
-            ts = round(time.time()*1000)
-            basename, extension = os.path.splitext(os.path.basename(file_name))
-            path_download_file = f"{file_path}{basename}_{ts}{extension}"
+        s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).download_file(
+            file_name, path_download_file)
 
-            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).download_file(
-                file_name, path_download_file)
+        # In order to rename the original file in bucket we need to delete
+        # it and upload it again
+        s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__,
+                        "edf_data_tmp/" + os.path.basename(file_name)).delete()
+        s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_file(
+            path_download_file,
+            "EEGs/edf/" + os.path.basename(path_download_file))
 
-            # In order to rename the original file in bucket we need to delete
-            # it and upload it again
-            s3_local.Object(self.__OBJ_STORAGE_BUCKET_LOCAL__,
-                            "edf_data_tmp/" + \
-                                os.path.basename(file_name)).delete()
-            s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).upload_file(
-                path_download_file,
-                "EEGs/edf/" + os.path.basename(path_download_file))
-
-    def anonymize_edf_file(self, signals, signal_headers, header, edf_file,
-                           new_file_path, to_remove, new_values):
+    def anonymize_edf_file(self, signals, signal_headers, header, new_file_name,
+                           to_remove, new_values):
         """Anonymize edf file by removing values of personal data in header
         fields."""
 
@@ -123,7 +107,6 @@ class GenericPlugin(EmptyPlugin):
                 header[attr] = new_val
 
         # Write new file with the same content and anonymized header
-        new_file_name = new_file_path + "/" + os.path.basename(edf_file)
         pyedflib.highlevel.write_edf(new_file_name, signals, signal_headers,
                                      header)
 
@@ -167,7 +150,7 @@ class GenericPlugin(EmptyPlugin):
         id = hashlib.sha256(bytes(personal_id, "utf-8")).hexdigest()
         return id
 
-    def upload_file(self, path_to_anonymized_files: str,
+    def upload_file(self, path_to_anonymized_file: str,
                      metadata_file_name, metadata_content) -> None:
         import boto3
         from botocore.client import Config
@@ -182,16 +165,15 @@ class GenericPlugin(EmptyPlugin):
                             config=Config(signature_version='s3v4'),
                             region_name=self.__OBJ_STORAGE_REGION__)
 
-        for file in os.listdir(path_to_anonymized_files):
-            file_to_upload = os.path.join(path_to_anonymized_files, file)
-            if os.path.isfile(file_to_upload):
-                s3.Bucket(self.__OBJ_STORAGE_BUCKET__).\
-                    upload_file(file_to_upload, "EEGs/edf/" + file)
-                if metadata_file_name is not None:
-                    obj_name = f"metadata_files/{metadata_file_name}"
-                    s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_fileobj(
-                        BytesIO(metadata_content), obj_name,
-                        ExtraArgs={'ContentType': "text/json"})
+        if os.path.isfile(path_to_anonymized_file):
+            s3.Bucket(self.__OBJ_STORAGE_BUCKET__).\
+                upload_file(path_to_anonymized_file,
+                            "EEGs/edf/" + os.path.basename(path_to_anonymized_file))
+            if metadata_file_name is not None:
+                obj_name = f"metadata_files/{metadata_file_name}"
+                s3.Bucket(self.__OBJ_STORAGE_BUCKET__).upload_fileobj(
+                    BytesIO(metadata_content), obj_name,
+                    ExtraArgs={'ContentType': "text/json"})
 
     def update_filename_pid_mapping(self, obj_name, personal_id, pseudoMRN, mrn):
         import boto3
@@ -243,7 +225,7 @@ class GenericPlugin(EmptyPlugin):
     def calculate_pseudoMRN(self, mrn, workspace_id):
         import hashlib
 
-        if mrn is None:
+        if mrn is None or workspace_id is None:
             pseudoMRN = None
         else:
             personalMRN = [mrn, workspace_id]
@@ -254,6 +236,28 @@ class GenericPlugin(EmptyPlugin):
 
         return pseudoMRN
 
+    def remove_tmp_edf_files(self, file_path):
+        import boto3
+        from botocore.client import Config
+
+        s3_local = boto3.resource('s3',
+                                  endpoint_url=self.__OBJ_STORAGE_URL_LOCAL__,
+                                  aws_access_key_id=\
+                                    self.__OBJ_STORAGE_ACCESS_ID_LOCAL__,
+                                  aws_secret_access_key=\
+                                    self.__OBJ_STORAGE_ACCESS_SECRET_LOCAL__,
+                                  config=Config(signature_version='s3v4'),
+                                  region_name=self.__OBJ_STORAGE_REGION__)
+
+        # Remove the file from the tmp folder if the file is not processed
+        # successfully
+        objs = list(s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__).\
+                    objects.filter(Prefix="edf_data_tmp/", Delimiter="/"))
+        if len(list(objs))>0:
+            for obj in objs:
+                if obj.key in file_path:
+                    s3_local.Bucket(self.__OBJ_STORAGE_BUCKET_LOCAL__
+                                    ).objects.filter(Prefix=file_path).delete()
 
     def action(self, input_meta: PluginExchangeMetadata = None) -> \
           PluginActionResponse:
@@ -263,146 +267,151 @@ class GenericPlugin(EmptyPlugin):
         Upload anonymized files to the corresponding storage.
         """
         import os
-        import shutil
         import pandas as pd
 
         from trino.dbapi import connect
         from trino.auth import BasicAuthentication
 
-        # Initialize the connection with Trino
-        conn = connect(
-            host=self.__TRINO_HOST__,
-            port=self.__TRINO_PORT__,
-            http_scheme="https",
-            auth=BasicAuthentication(self.__TRINO_USER__,
-                                     self.__TRINO_PASSWORD__)
-        )
-
-        # Get the schema name, schema in Trino is an equivalent to a bucket in
-        # MinIO Trino doesn't allow to have "-" in schema name so it needs to be
-        # replaced with "_"
-        schema_name = self.__OBJ_STORAGE_BUCKET__.replace("-", "_")
-
-        # Get the table name
-        table_name = self.__OBJ_STORAGE_TABLE__.replace("-", "_")
-
-        path_to_data = \
-            "mescobrad_edge/plugins/edf_anonymisation_plugin/anonymize_files/"
-
-        # create temporary folder for storing downloaded files
-        os.makedirs(path_to_data, exist_ok=True)
-
-        # Download data to process
-        self.download_file(path_to_data)
-
-        # Anonymize files
-        path_to_anonymized_file = path_to_data + "anonymized"
-        os.makedirs(path_to_anonymized_file, exist_ok=True)
-
         try:
-            for file in os.listdir(path_to_data):
-                path_to_file = os.path.join(path_to_data, file)
-                if os.path.isfile(path_to_file):
+            # Initialize the connection with Trino
+            conn = connect(
+                host=self.__TRINO_HOST__,
+                port=self.__TRINO_PORT__,
+                http_scheme="https",
+                auth=BasicAuthentication(self.__TRINO_USER__,
+                                        self.__TRINO_PASSWORD__)
+            )
 
-                    # Read the file and get all the data from the original file
-                    print("Processing started ...")
-                    signals, signal_headers, header = \
-                        pyedflib.highlevel.read_edf(path_to_file)
+            # Get the schema name, schema in Trino is an equivalent to a bucket
+            # in MinIO Trino doesn't allow to have "-" in schema name so it
+            # needs to be replaced with "_"
+            schema_name = self.__OBJ_STORAGE_BUCKET__.replace("-", "_")
 
-                    # Remove personal information from headers
-                    remove_values = ["patientname", "birthdate",
-                                     "patient_additional", "patientcode",
-                                     "admincode", "gender", "sex",
-                                     "technician"]
+            # Get the table name
+            table_name = self.__OBJ_STORAGE_TABLE__.replace("-", "_")
 
-                    # Set empty values
-                    new_values = ["", "", "", "", "", "", "", ""]
+            path_to_data = \
+                "mescobrad_edge/plugins/edf_anonymisation_plugin/anonymize_files/"
 
-                    print("Anonymization started ... ")
-                    self.anonymize_edf_file(signals, signal_headers, header,
-                                            path_to_file,
-                                            path_to_anonymized_file,
-                                            remove_values, new_values)
+            path_to_anonymized_data = f"{path_to_data}anonymized/"
 
-                    # Extract metadata information from the edf file, from
-                    # signal header
-                    list_of_fields_to_extract = ['label','sample_rate',
-                                                 'sample_frequency',
-                                                 'prefilter', 'dimension']
-                    print("Extracting metadata information ... ")
-                    data = self.extract_metadata(signal_headers,
-                                                 list_of_fields_to_extract)
+            # create temporary folder for storing downloaded files
+            os.makedirs(path_to_data, exist_ok=True)
+            os.makedirs(path_to_anonymized_data, exist_ok=True)
 
-                    # Extract additional information from header (startdate/time
-                    # and duration of the signal)
-                    f = pyedflib.EdfReader(path_to_file)
-                    file_duration = f.getFileDuration()
-                    startdate_time = f.getStartdatetime()
-                    del f
+            # Generate pseudoMRN
+            pseudoMRN = self.calculate_pseudoMRN(
+                input_meta.data_info['MRN'],
+                input_meta.data_info['workspace_id'])
 
-                    # Insert additional data in extracted metadata from signal
-                    # headers
-                    data.insert(0, 'file_duration', file_duration)
-                    data.insert(0, 'startdate_time', startdate_time)
+            basename = os.path.basename(input_meta.data_info['filename'])
 
-                    # Source name of the original edf file
-                    source_name = os.path.basename(path_to_file)
+            if pseudoMRN is not None:
+                path_to_download_file = f"{path_to_data}{pseudoMRN}_{basename}"
+                path_to_anonymized_file = \
+                    f"{path_to_anonymized_data}{pseudoMRN}_{basename}"
+            else:
+                path_to_download_file = f"{path_to_data}{basename}"
+                path_to_anonymized_file = f"{path_to_anonymized_data}{basename}"
 
-                    # Metadata file name
-                    metadata_file_template = "{name}.json"
-                    if input_meta.data_info["metadata_json_file"] is not None:
-                        metadata_file_name = metadata_file_template.format(
-                            name=os.path.splitext(source_name)[0])
-                    else:
-                        metadata_file_name = None
+            # Download data to process
+            self.download_file(path_to_download_file,
+                               input_meta.data_info['filename'])
 
-                    # Generate personal id
-                    data_info = input_meta.data_info
-                    if all(param is not None for param in [data_info['name'],
-                                                           data_info['surname'],
-                                                           data_info['date_of_birth'],
-                                                           data_info['unique_id']]):
+            # Anonymize files
+            if os.path.isfile(path_to_download_file):
+                # Read the file and get all the data from the original file
+                print("Processing started ...")
+                signals, signal_headers, header = \
+                    pyedflib.highlevel.read_edf(path_to_download_file)
 
-                        # Make unified dates, so that different formats of date
-                        # doesn't change the final id
-                        data_info["date_of_birth"] = pd.to_datetime(
-                             data_info["date_of_birth"], dayfirst=True)
+                # Remove personal information from headers
+                remove_values = ["patientname", "birthdate",
+                                 "patient_additional", "patientcode",
+                                 "admincode", "gender", "sex", "technician"]
 
-                        data_info["date_of_birth"] = \
-                            data_info["date_of_birth"].strftime("%d-%m-%Y")
+                # Set empty values
+                new_values = ["", "", "", "", "", "", "", ""]
 
-                        # ID is generated base on name, surname, date of birth,
-                        # national unique ID
-                        personal_data = [data_info['name'],
-                                         data_info['surname'],
-                                         data_info['date_of_birth'],
-                                         data_info['unique_id']]
-                        personal_id = self.generate_personal_id(personal_data)
-                    else:
-                        personal_id = None
+                print("Anonymization started ... ")
+                self.anonymize_edf_file(signals, signal_headers, header,
+                                        path_to_anonymized_file,
+                                        remove_values, new_values)
 
-                    # Insert personal id in the extracted data
-                    data.insert(0, "PID", personal_id)
+                # Extract metadata information from the edf file, from signal
+                # header
+                list_of_fields_to_extract = ['label','sample_rate',
+                                             'sample_frequency', 'prefilter',
+                                             'dimension']
 
-                    # Generate pseudoMRN
-                    pseudoMRN = self.calculate_pseudoMRN(
-                        input_meta.data_info['MRN'],
-                        input_meta.data_info['workspace_id'])
+                print("Extracting metadata information ... ")
+                data = self.extract_metadata(signal_headers,
+                                             list_of_fields_to_extract)
 
-                    # Transform data in suitable form for updating trino table
-                    data_transformed = self.transform_input_data(
-                        data, source_name, input_meta.data_info["workspace_id"],
-                        pseudoMRN, metadata_file_name)
+                # Extract additional information from header (startdate/time and
+                # duration of the signal)
+                f = pyedflib.EdfReader(path_to_download_file)
+                file_duration = f.getFileDuration()
+                startdate_time = f.getStartdatetime()
+                del f
 
-                    self.upload_data_on_trino(schema_name, table_name,
-                                              data_transformed, conn)
+                # Insert additional data in extracted metadata from signal
+                # headers
+                data.insert(0, 'file_duration', file_duration)
+                data.insert(0, 'startdate_time', startdate_time)
 
-                    # Update key value file with mapping between filename and
-                    # patient id, this file is stored in the local MinIO
-                    # instance
-                    self.update_filename_pid_mapping(file, personal_id,
-                                                     pseudoMRN,
-                                                     input_meta.data_info['MRN'])
+                # Source name of the original edf file
+                source_name = os.path.basename(path_to_download_file)
+
+                # Metadata file name
+                metadata_file_template = "{name}.json"
+                if input_meta.data_info["metadata_json_file"] is not None:
+                    metadata_file_name = metadata_file_template.format(
+                        name=os.path.splitext(source_name)[0])
+                else:
+                    metadata_file_name = None
+
+                # Generate personal id
+                data_info = input_meta.data_info
+                if all(param is not None for param in [data_info['name'],
+                                                       data_info['surname'],
+                                                       data_info['date_of_birth'],
+                                                       data_info['unique_id']]):
+
+                    # Make unified dates, so that different formats of date
+                    # doesn't change the final id
+                    data_info["date_of_birth"] = pd.to_datetime(
+                        data_info["date_of_birth"], dayfirst=True)
+
+                    data_info["date_of_birth"] = \
+                        data_info["date_of_birth"].strftime("%d-%m-%Y")
+
+                    # ID is generated based on name, surname, date of birth,
+                    # national unique ID
+                    personal_data = [data_info['name'], data_info['surname'],
+                                     data_info['date_of_birth'],
+                                     data_info['unique_id']]
+                    personal_id = self.generate_personal_id(personal_data)
+                else:
+                    personal_id = None
+
+                # Insert personal id in the extracted data
+                data.insert(0, "PID", personal_id)
+
+                # Transform data in suitable form for updating trino table
+                data_transformed = self.transform_input_data(
+                    data, source_name, input_meta.data_info["workspace_id"],
+                    pseudoMRN, metadata_file_name)
+
+                self.upload_data_on_trino(schema_name, table_name,
+                                          data_transformed, conn)
+
+                # Update key value file with mapping between filename and
+                # patient id, this file is stored in the local MinIO
+                # instance
+                self.update_filename_pid_mapping(source_name, personal_id,
+                                                 pseudoMRN,
+                                                 input_meta.data_info['MRN'])
 
             # Upload processed data
             print("Uploading file ...")
@@ -414,7 +423,12 @@ class GenericPlugin(EmptyPlugin):
             print("EDF processing failed with error: " + str(e))
 
         finally:
-            # Remove folder with downloaded and anonymized files
-            shutil.rmtree(os.path.split(path_to_anonymized_file)[0])
+            # Remove downloaded and anonymized files
+            if os.path.exists(path_to_download_file):
+                os.remove(path_to_download_file)
+            if os.path.exists(path_to_anonymized_file):
+                os.remove(path_to_anonymized_file)
+
+            self.remove_tmp_edf_files(input_meta.data_info['filename'])
 
         return PluginActionResponse()
